@@ -35,6 +35,19 @@ _tech_data:
     resource: "@TechDataAS2SecureBundle/Resources/config/routing.xml"
 ```
 
+add to config.yml
+```yml
+monolog:
+    channels:
+        - 'as2log'
+    handlers:
+        as2log:
+            type: stream
+            path: %kernel.logs_dir%/as2.%kernel.environment%.log
+            level: debug
+            channels: [as2log]
+```
+
 ### Prior Art
 The contents of this library are largely based on the work done by Sebastien Malot on the AS2Secure library.  The original can be found at [http://www.as2secure.com/](http://www.as2secure.com/ "www.as2secure.com").  In accordance with the license associated to that library, we continue to follow the LGPL license.
 

@@ -182,6 +182,27 @@ abstract class AbstractBase
     {
         return $this->headers->getHeader($token);
     }
+
+    /**
+     * Add new header (or override current one)
+     *
+     * @param string $key The name of the header
+     * @param string $value The value of the header
+     */
+    public function addHeader($key, $value)
+    {
+        return $this->headers->addHeader($key, $value);
+    }
+
+    /**
+     * @param $token
+     *
+     * @return mixed
+     */
+    public function setHeader($token)
+    {
+        return $this->headers->getHeader($token);
+    }
     
     /**
      * @return array

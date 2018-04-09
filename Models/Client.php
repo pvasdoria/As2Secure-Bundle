@@ -123,7 +123,11 @@ class Client
         $log .= " Response code:" . $info['http_code'];
         
         if ($request instanceof Message && $request->getPartnerTo()->mdn_request == Partner::ACK_SYNC) {
-            $temp_response = $this->requestFactory->build($response, new Header($this->response_headers[count($this->response_headers) - 1]));
+            $response_headers =  [];
+            if (!empty($this->response_headers)) {
+                $response_headers = $this->response_headers[count($this->response_headers) - 1];
+            }
+            $temp_response = $this->requestFactory->build($response, new Header($response_headers));
             $as2_response  = $temp_response->getObject();
             $as2_response->decode();
         }

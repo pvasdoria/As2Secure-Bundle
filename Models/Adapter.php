@@ -31,6 +31,7 @@ namespace TechData\AS2SecureBundle\Models;
  *
  */
 
+use Psr\Log\LoggerInterface;
 use TechData\AS2SecureBundle\Factories\Partner as PartnerFactory;
 
 /**
@@ -73,24 +74,30 @@ class Adapter
      * @var
      */
     private $AS2_DIR_BIN;
-    
+
+    /**
+     * @var LoggerInterface
+     */
+    private $logger;
+
     /**
      * Adapter constructor.
-     *
      * @param PartnerFactory $partnerFactory
-     * @param                $AS2_DIR_BIN
+     * @param $AS2_DIR_BIN
+     * @param LoggerInterface $logger
      */
-    function __construct(PartnerFactory $partnerFactory, $AS2_DIR_BIN)
+    function __construct(PartnerFactory $partnerFactory, $AS2_DIR_BIN, LoggerInterface $logger)
     {
         $this->partnerFactory = $partnerFactory;
         $this->AS2_DIR_BIN    = $AS2_DIR_BIN;
+        $this->logger         = $logger;
     }
-    
+
     /**
      * Calculate the message integrity check (MIC) using SHA1 or MD5 algo
      *
      * @param string $input The file to use
-     * @param string $algo  The algo to use
+     * @param string $algo The algo to use
      *
      * @return string                The hash calculated
      */
@@ -101,7 +108,7 @@ class Adapter
         else
             return base64_encode(self::hex2bin(md5_file($input))) . ', md5';
     }
-    
+
     /**
      * Convert a string from hexadecimal format to binary format
      *
@@ -117,10 +124,10 @@ class Adapter
             $bin .= chr(hexdec($str{$i} . $str{($i + 1)}));
             $i   += 2;
         } while ($i < strlen($str));
-        
+
         return $bin;
     }
-    
+
     /**
      * Extract the message integrity check (MIC) from the digital signature
      *
@@ -132,20 +139,22 @@ class Adapter
     {
         try {
             $command = self::$javapath . ' -jar ' . escapeshellarg($this->AS2_DIR_BIN . self::$ssl_adapter) . ' checksum' . ' -in ' . escapeshellarg($input) . ' 2>/dev/null';
-            
+            $this->logger->info('Extract the message integrity check (MIC) from the digital signature', [
+               'command' =>  $command
+            ]);
             $dump = self::exec($command, true);
-            
+
             return $dump[0];
         } catch (\Exception $e) {
             return false;
         }
     }
-    
+
     /**
      * Execute a command line and throw Exception if an error appends
      *
-     * @param string  $command           The command line to execute
-     * @param boolean $return_output     True  to return all data from standard output
+     * @param string $command The command line to execute
+     * @param boolean $return_output True  to return all data from standard output
      *                                   False to return only the error code
      *
      * @return string    The error code or the content from standard output
@@ -158,21 +167,21 @@ class Adapter
             exec($command, $output, $return_var);
             $line = (isset($output[0]) ? $output[0] : 'Unexpected error in command line : ' . $command);
             if ($return_var)
-                throw new \Exception($line, (int) $return_var);
+                throw new \Exception($line, (int)$return_var);
         } catch (\Exception $e) {
             throw $e;
         }
-        
+
         if ($return_output)
             return $output;
         else
             return $return_var;
     }
-    
+
     /**
      * Extract CA from a PKCS12 Certificate
      *
-     * @param string $input    The PKCS12 Certificate
+     * @param string $input The PKCS12 Certificate
      * @param string $password The PKCS12 Certificate's password
      *
      * @return string            The file which contains the CA
@@ -181,12 +190,12 @@ class Adapter
     {
         return self::getDataFromPKCS12($input, 'extracerts', $password);
     }
-    
+
     /**
      * Extract Part from a PKCS12 Certificate
      *
-     * @param string $input    The PKCS12 Certificate
-     * @param string $token    The Part to extract
+     * @param string $input The PKCS12 Certificate
+     * @param string $token The Part to extract
      * @param string $password The PKCS12 Certificate's password
      *
      * @return string            The file which contains the Part
@@ -195,30 +204,30 @@ class Adapter
     {
         try {
             $pkcs12 = file_get_contents($input);
-            
+
             $certs = [];
             openssl_pkcs12_read($pkcs12, $certs, $password);
-            
+
             if (!isset($certs[$token])) {
                 throw new AS2Exception('Unexpected error while extracting certificates from pkcs12 container.');
             }
-            
+
             $output = self::getTempFilename();
             file_put_contents($output, $certs[$token]);
-            
+
             return $output;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
     /**
      * Create a temporary file into temporary directory and add it to
      * the garbage collector at shutdown
      *
      * @return string       The temporary file generated
      */
-    public static function getTempFilename()
+    public static function getTempFilename($filename = null)
     {
         if (is_null(self::$tmp_files)) {
             self::$tmp_files = [];
@@ -227,14 +236,17 @@ class Adapter
                 '_deleteTempFiles'
             ]);
         }
-        
-        $dir               = sys_get_temp_dir();
-        $filename          = tempnam($dir, 'as2file_');
+
+        $dir = sys_get_temp_dir();
+        if (empty($filename)) {
+            $filename = tempnam($dir, 'as2file_');
+        }
+
         self::$tmp_files[] = $filename;
-        
+
         return $filename;
     }
-    
+
     /**
      * Garbage collector to delete temp files created with 'self::getTempFilename'
      * with shutdown function
@@ -245,7 +257,7 @@ class Adapter
         foreach (self::$tmp_files as $file)
             @unlink($file);
     }
-    
+
     /**
      * Determine the mimetype of a file (also called 'Content-Type')
      *
@@ -258,25 +270,25 @@ class Adapter
         // for old PHP (deprecated)
         if (function_exists('mime_content_type'))
             return mime_content_type($file);
-        
+
         // for PHP > 5.3.0 / PECL FileInfo > 0.1.0
         if (function_exists('finfo_file')) {
             $finfo    = finfo_open(FILEINFO_MIME);
             $mimetype = finfo_file($finfo, $file);
             finfo_close($finfo);
-            
+
             return $mimetype;
         }
-        
+
         $os = self::detectOS();
         // for Unix OS : command line
         if ($os == 'UNIX') {
             $mimetype = trim(exec('file -b -i ' . escapeshellarg($file)));
             $parts    = explode(';', $mimetype);
-            
+
             return trim($parts[0]);
         }
-        
+
         // fallback for Windows and Others OS
         // source code found at :
         // @link http://fr2.php.net/manual/en/function.mime-content-type.php#87856
@@ -291,7 +303,7 @@ class Adapter
             'xml'  => 'application/xml',
             'swf'  => 'application/x-shockwave-flash',
             'flv'  => 'video/x-flv',
-            
+
             // images
             'png'  => 'image/png',
             'jpe'  => 'image/jpeg',
@@ -304,46 +316,45 @@ class Adapter
             'tif'  => 'image/tiff',
             'svg'  => 'image/svg+xml',
             'svgz' => 'image/svg+xml',
-            
+
             // archives
             'zip'  => 'application/zip',
             'rar'  => 'application/x-rar-compressed',
             'exe'  => 'application/x-msdownload',
             'msi'  => 'application/x-msdownload',
             'cab'  => 'application/vnd.ms-cab-compressed',
-            
+
             // audio/video
             'mp3'  => 'audio/mpeg',
             'qt'   => 'video/quicktime',
             'mov'  => 'video/quicktime',
-            
+
             // adobe
             'pdf'  => 'application/pdf',
             'psd'  => 'image/vnd.adobe.photoshop',
             'ai'   => 'application/postscript',
             'eps'  => 'application/postscript',
             'ps'   => 'application/postscript',
-            
+
             // ms office
             'doc'  => 'application/msword',
             'rtf'  => 'application/rtf',
             'xls'  => 'application/vnd.ms-excel',
             'ppt'  => 'application/vnd.ms-powerpoint',
-            
+
             // open office
             'odt'  => 'application/vnd.oasis.opendocument.text',
             'ods'  => 'application/vnd.oasis.opendocument.spreadsheet',
         ];
-        
+
         $ext = strtolower(array_pop(explode('.', $file)));
         if (array_key_exists($ext, $mime_types)) {
             return $mime_types[$ext];
-        }
-        else {
+        } else {
             return 'application/octet-stream';
         }
     }
-    
+
     /**
      * Determinate the Server OS
      *
@@ -357,10 +368,10 @@ class Adapter
             return 'WIN';
         if (stripos($os, 'linux') !== false || stripos($os, 'unix') !== false)
             return 'UNIX';
-        
+
         return 'OTHER';
     }
-    
+
     /**
      * @param $partner_from
      * @param $partner_to
@@ -374,14 +385,14 @@ class Adapter
         } catch (\Exception $e) {
             throw new AS2Exception('Sender AS2 id "' . $partner_from . '" is unknown.');
         }
-        
+
         try {
             $this->partner_to = $this->partnerFactory->getPartner($partner_to);
         } catch (\Exception $e) {
             throw new AS2Exception('Receiver AS2 id "' . $partner_to . '" is unknown.');
         }
     }
-    
+
     /**
      * Generate a mime multipart file from files
      *
@@ -394,25 +405,27 @@ class Adapter
         try {
             if (!is_array($files) || !count($files))
                 throw new \Exception('No file provided.');
-            
+
             $args = '';
             foreach ($files as $file) {
                 $args .= ' -file ' . escapeshellarg($file['path']) . ' -mimetype ' . escapeshellarg($file['mimetype']) . ' -name ' . escapeshellarg($file['filename']);
             }
-            
+
             $output = self::getTempFilename();
-            
+
             // execute main operation
             $command = self::$javapath . ' -jar ' . escapeshellarg($this->AS2_DIR_BIN . self::$ssl_adapter) . ' compose' . $args . ' -out ' . escapeshellarg($output);
-            
+            $this->logger->info('Generate a mime multipart file from files', [
+                'command' =>  $command
+            ]);
             $result = self::exec($command);
-            
+
             return $output;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
     /**
      * Extract files from mime multipart file
      *
@@ -424,37 +437,40 @@ class Adapter
     {
         try {
             $output = self::getTempFilename();
-            
+
             // execute main operation
             $command = self::$javapath . ' -jar ' . escapeshellarg($this->AS2_DIR_BIN . self::$ssl_adapter) . ' extract' . ' -in ' . escapeshellarg($input) . ' -out ' . escapeshellarg($output);
+            $this->logger->info('Extract files from mime multipart file', [
+                'command' =>  $command
+            ]);
             $results = self::exec($command, true);
-            
+
             // array returned
             $files = [];
-            
+
             foreach ($results as $tmp) {
                 $tmp = explode(';', $tmp);
                 if (count($tmp) <= 1)
                     continue;
                 if (count($tmp) != 3)
                     throw new AS2Exception('Unexpected data structure while extracting message.');
-                
+
                 $file             = [];
                 $file['path']     = trim($tmp[0], '"');
                 $file['mimetype'] = trim($tmp[1], '"');
                 $file['filename'] = trim($tmp[2], '"');
                 $files[]          = $file;
-                
+
                 // schedule file deletion
                 Adapter::addTempFileForDelete($file['path']);
             }
-            
+
             return $files;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
     /**
      * Schedule file for deletion
      *
@@ -470,7 +486,7 @@ class Adapter
         }
         self::$tmp_files[] = $file;
     }
-    
+
     /**
      * Compress a file which contains mime headers
      *
@@ -482,18 +498,20 @@ class Adapter
     {
         try {
             $output = self::getTempFilename();
-            
+
             // execute main operation
             $command = self::$javapath . ' -jar ' . escapeshellarg($this->AS2_DIR_BIN . self::$ssl_adapter) . ' compress' . ' -in ' . escapeshellarg($input) . ' -out ' . escapeshellarg($output);
-            
+            $this->logger->info('Compress a file which contains mime headers', [
+                'command' =>  $command
+            ]);
             $result = self::exec($command);
-            
+
             return $output;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
     /**
      * Decompress a file which contains mime headers
      *
@@ -505,24 +523,26 @@ class Adapter
     {
         try {
             $output = self::getTempFilename();
-            
+
             // execute main operation
             $command = self::$javapath . ' -jar ' . escapeshellarg($this->AS2_DIR_BIN . self::$ssl_adapter) . ' decompress' . ' -in ' . escapeshellarg($input) . ' -out ' . escapeshellarg($output);
-            
+            $this->logger->info('Decompress a file which contains mime headers', [
+                'command' =>  $command
+            ]);
             $result = self::exec($command);
-            
+
             return $output;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
     /**
      * Sign a file which contains mime headers
      *
-     * @param string  $input    The file to sign
+     * @param string $input The file to sign
      * @param boolean $use_zlib Use Zlib to compress main container
-     * @param string  $encoding Encoding to use for main container (base64 | binary)
+     * @param string $encoding Encoding to use for main container (base64 | binary)
      *
      * @return string                The content signed
      */
@@ -531,25 +551,85 @@ class Adapter
         try {
             if (!$this->partner_from->sec_pkcs12)
                 throw new \Exception('Config error : PKCS12 (' . $this->partner_from->id . ')');
-            
+
             $password = ($this->partner_from->sec_pkcs12_password ? ' -password ' . escapeshellarg($this->partner_from->sec_pkcs12_password) : ' -nopassword');
-            
+
             if ($use_zlib)
                 $compress = ' -compress';
             else $compress = '';
-            
+
             $output = self::getTempFilename();
-            
+
             // execute main operation
             $command = self::$javapath . ' -jar ' . escapeshellarg($this->AS2_DIR_BIN . self::$ssl_adapter) . ' sign' . ' -pkcs12 ' . escapeshellarg($this->partner_from->sec_pkcs12) . $password . $compress . ' -encoding ' . escapeshellarg(strtolower($encoding)) . ' -in ' . escapeshellarg($input) . ' -out ' . escapeshellarg($output) . ' >/dev/null';
+
+            $this->logger->info('Sign a file which contains mime headers', [
+                'command' =>  $command
+            ]);
             $result  = self::exec($command);
-            
+
             return $output;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
+    /**
+     * @param        $input
+     * @param bool   $use_zlib
+     * @param string $encoding
+     *
+     * @return string
+     * @throws AS2Exception
+     * @throws \Exception
+     */
+    public function sign_old($input, $use_zlib = false, $encoding = 'base64')
+    {
+        try {
+
+            $private_key = self::getPrivateFromPKCS12($this->partner_from->sec_pkcs12, $this->partner_from->sec_pkcs12_password, '');
+            if (!$private_key)
+                throw new AS2Exception('Unable to extract private key from PKCS12 file. (' . $this->partner_from->sec_pkcs12 . ' - using:' . $this->partner_to->sec_pkcs12_password . ')');
+
+            $output = self::getTempFilename();
+
+            $command = self::$ssl_openssl . ' dgst -sha512 ' . ' -sign ' . escapeshellarg($private_key) . ' -out ' . escapeshellarg($output) . '  ' . escapeshellarg($input);
+//            $command = self::$ssl_openssl . ' dgst -sha1 ' . ' -sign ' . escapeshellarg('/home/pvesin/Workspace/site/edi/key_edi/proweltek/key.pem') . ' -out ' . escapeshellarg($output) . '  ' . escapeshellarg($input);
+
+            $this->logger->info('Sign a file which contains mime headers', [
+                'command' => $command
+            ]);
+
+            $result = self::exec($command);
+//            return $output;
+            return $this->encoding($output, $encoding);
+        } catch (\Exception $e) {
+            throw $e;
+        }
+    }
+
+    /**
+     * @param        $input
+     * @param string $encoding
+     */
+    public function encoding($input, $encoding = 'base64') {
+        try {
+            //openssl base64 -in /tmp/sign.sha256 -out <signature>*/
+            $output  = self::getTempFilename();
+            $command = self::$ssl_openssl . '  ' . strtolower($encoding) . '  -in ' . escapeshellarg($input) . '  -out ' .escapeshellarg($output);
+
+            $this->logger->info('encoding a file whith signature', [
+                'command' =>  $command
+            ]);
+
+            $result  = self::exec($command);
+
+            return $output;
+        } catch (\Exception $e) {
+            throw $e;
+        }
+    }
+
     /**
      * Verify a signed file
      *
@@ -564,24 +644,26 @@ class Adapter
                 $security = ' -pkcs12 ' . escapeshellarg($this->partner_from->sec_pkcs12) . ($this->partner_from->sec_pkcs12_password ? ' -password ' . escapeshellarg($this->partner_from->sec_pkcs12_password) : ' -nopassword');
             else
                 $security = ' -cert ' . escapeshellarg($this->partner_from->sec_certificate);
-            
+
             $output = self::getTempFilename();
-            
+
             $command = self::$javapath . ' -jar ' . escapeshellarg($this->AS2_DIR_BIN . self::$ssl_adapter) . ' verify' . $security . ' -in ' . escapeshellarg($input) . ' -out ' . escapeshellarg($output) . ' >/dev/null 2>&1';
-            
+            $this->logger->info('Verify a signed file', [
+                'command' =>  $command
+            ]);
             // on error, an exception is throw
             $result = self::exec($command);
-            
+
             return $output;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
     /**
      * Encrypt a file
      *
-     * @param string $input  The file to encrypt
+     * @param string $input The file to encrypt
      * @param string $cypher The Cypher to use for encryption
      *
      * @return string                The message encrypted
@@ -593,46 +675,36 @@ class Adapter
                 $certificate = self::getPublicFromPKCS12($this->partner_to->sec_pkcs12, $this->partner_to->sec_pkcs12_password);
             else
                 $certificate = $this->partner_to->sec_certificate;
-            
+
             if (!$certificate)
                 throw new \Exception('Unable to extract private key from PKCS12 file. (' . $this->partner_to->sec_pkcs12 . ' - using:' . $this->partner_to->sec_pkcs12_password . ')');
-            
+
             $output = self::getTempFilename();
-            
-            $command = self::$ssl_openssl . ' smime ' . ' -encrypt' . ' -in ' . escapeshellarg($input) . ' -out ' . escapeshellarg($output) . ' -des3 ' . escapeshellarg($certificate);
+
+            //openssl enc -des3 -d -a -salt -in fic1.des3 -out file.txt -pass pass:test
+
+            $command = self::$ssl_openssl . ' smime ' . ' -encrypt' . ' -in ' . escapeshellarg($input) . ' -out ' . escapeshellarg($output) . ' -des3 -binary ' . escapeshellarg($certificate);
+            $this->logger->info('Encrypt a file', [
+                'command' =>  $command
+            ]);
             $result  = $this->exec($command);
-            
+
             $headers = 'Content-Type: application/pkcs7-mime; smime-type="enveloped-data"; name="smime.p7m"' . "\n" . 'Content-Disposition: attachment; filename="smime.p7m"' . "\n" . 'Content-Transfer-Encoding: binary' . "\n\n";
             $content = file_get_contents($output);
-            
+
             // we remove header auto-added by openssl
             $content = substr($content, strpos($content, "\n\n") + 2);
             $content = base64_decode($content);
-            
+
             $content = $headers . $content;
             file_put_contents($output, $content);
-            
-            /*if ($this->partner_to->sec_pkcs12)
-                $security = ' -pkcs12 '.escapeshellarg($this->partner_to->sec_pkcs12).
-                            ($this->partner_to->sec_pkcs12_password?' -password '.escapeshellarg($this->partner_to->sec_pkcs12_password):' -nopassword');
-            else
-                $security = ' -cert '.escapeshellarg($this->partner_to->sec_certificate);
 
-            $command = self::$javapath.' -jar '.escapeshellarg(AS2_DIR_BIN.self::$ssl_adapter).
-                                       ' encrypt'.
-                                       $security.
-//                                       ' -cypher '.escapeshellarg($cypher).
-                                       ' -in '.escapeshellarg($input).
-                                       ' -out '.escapeshellarg($output);
-
-            $result = $this->exec($command);*/
-            
             return $output;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
     /**
      * Fix the content type to match with RFC 2311
      *
@@ -653,11 +725,11 @@ class Adapter
         $content = str_replace('Content-Type: ' . $from, 'Content-Type: ' . $to, $content);
         file_put_contents($file, $content);
     }*/
-    
+
     /**
      * Extract Public certificate from a PKCS12 Certificate
      *
-     * @param string $input    The PKCS12 Certificate
+     * @param string $input The PKCS12 Certificate
      * @param string $password The PKCS12 Certificate's password
      *
      * @return string            The file which contains the Public Certificate
@@ -666,7 +738,7 @@ class Adapter
     {
         return self::getDataFromPKCS12($input, 'cert', $password);
     }
-    
+
     /**
      * Decrypt a message
      *
@@ -680,16 +752,16 @@ class Adapter
         file_put_contents('/tmp/decrypt', 'try to decrypt file :'."\n", FILE_APPEND);
         file_put_contents('/tmp/decrypt', '---------------------------------------------------------------'."\n", FILE_APPEND);
         file_put_contents('/tmp/decrypt', print_r(file_get_contents($input), true)."\n", FILE_APPEND);*/
-        
+
         try {
             $private_key = self::getPrivateFromPKCS12($this->partner_to->sec_pkcs12, $this->partner_to->sec_pkcs12_password, '');
             if (!$private_key)
                 throw new AS2Exception('Unable to extract private key from PKCS12 file. (' . $this->partner_to->sec_pkcs12 . ' - using:' . $this->partner_to->sec_pkcs12_password . ')');
-            
+
             $output = self::getTempFilename();
-            
+
             $command = self::$ssl_openssl . ' smime ' . ' -decrypt ' . ' -in ' . escapeshellarg($input) . ' -inkey ' . escapeshellarg($private_key) . ' -out ' . escapeshellarg($output);
-            
+
             // seems to generate non-conform message
             /*$security = ' -pkcs12 '.escapeshellarg($this->partner_to->sec_pkcs12).
                 ($this->partner_to->sec_pkcs12_password?' -password '.escapeshellarg($this->partner_to->sec_pkcs12_password):' -nopassword');
@@ -700,19 +772,21 @@ class Adapter
                                        ' -in '.escapeshellarg($input).
                                        ' -out '.escapeshellarg($output).
                                        ' >/dev/null';*/
-            
+            $this->logger->info('decrypt a file', [
+                'command' =>  $command
+            ]);
             $result = $this->exec($command);
-            
+
             return $output;
         } catch (\Exception $e) {
             throw $e;
         }
     }
-    
+
     /**
      * Extract Private Certificate from a PKCS12 Certificate
      *
-     * @param string $input    The PKCS12 Certificate
+     * @param string $input The PKCS12 Certificate
      * @param string $password The PKCS12 Certificate's password
      *
      * @return string                The file which contains the Private Certificate

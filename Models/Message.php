@@ -241,7 +241,7 @@ class Message extends AbstractBase
                 $this->is_crypted = true;
             } catch (\Exception $e) {
                 throw $e;
-                
+
                 return false;
             }
         }

@@ -90,6 +90,19 @@ class Partner
      *
      */
     const SIGN_SHA1 = 'sha1'; // full url including "http://" or "https://"
+
+    /**
+     *
+     */
+    const SIGN_SHA256 = 'sha256'; // full url including "http://" or "https://"
+
+
+    /**
+     *
+     */
+    const SIGN_SHA512 = 'sha512'; // full url including "http://" or "https://"
+
+
     /**
      *
      */
@@ -114,12 +127,12 @@ class Partner
      *
      */
     const CRYPT_DES = 'des';
-    
+
     // notification process
     /**
      *
      */
-    const CRYPT_3DES = 'des3';
+    const CRYPT_3DES    = 'des3';
     /**
      *
      */
@@ -132,6 +145,12 @@ class Partner
      *
      */
     const CRYPT_AES_256 = 'aes256';
+
+    /**
+     *
+     */
+    const CRYPT_TDES = 'TDES';
+
     /**
      * @var array
      */

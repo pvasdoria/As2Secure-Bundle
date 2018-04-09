@@ -2,6 +2,7 @@
 
 namespace TechData\AS2SecureBundle\Services;
 
+use Psr\Log\LoggerInterface;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\HttpFoundation\Request;
 use TechData\AS2SecureBundle\Events\Log;
@@ -15,6 +16,8 @@ use TechData\AS2SecureBundle\Factories\Request as RequestFactory;
 use TechData\AS2SecureBundle\Interfaces\MessageSender;
 use TechData\AS2SecureBundle\Models\Header;
 use TechData\AS2SecureBundle\Models\Server;
+use TechData\AS2SecureBundle\Models\Message as MessageModel;
+use TechData\AS2SecureBundle\Models\Adapter as AdapterModel;
 
 /**
  * Description of AS2
@@ -62,20 +65,34 @@ class AS2 implements MessageSender
      * @var Client
      */
     private $client;
-    
+
+    /**
+     * @var LoggerInterface
+     */
+    private $logger;
+
     /**
      * AS2 constructor.
      *
      * @param EventDispatcherInterface $eventDispatcher
-     * @param Server                   $server
-     * @param RequestFactory           $requestFactory
-     * @param PartnerFactory           $partnerFactory
-     * @param MessageFactory           $messageFactory
-     * @param AdapterFactory           $adapterFactory
-     * @param Client                   $client
+     * @param Server $server
+     * @param RequestFactory $requestFactory
+     * @param PartnerFactory $partnerFactory
+     * @param MessageFactory $messageFactory
+     * @param AdapterFactory $adapterFactory
+     * @param Client $client
+     * @param LoggerInterface $logger
      */
-    public function __construct(EventDispatcherInterface $eventDispatcher, Server $server, RequestFactory $requestFactory, PartnerFactory $partnerFactory, MessageFactory $messageFactory, AdapterFactory $adapterFactory, Client $client)
-    {
+    public function __construct(
+        EventDispatcherInterface $eventDispatcher,
+        Server $server,
+        RequestFactory $requestFactory,
+        PartnerFactory $partnerFactory,
+        MessageFactory $messageFactory,
+        AdapterFactory $adapterFactory,
+        Client $client,
+        LoggerInterface $logger
+    ) {
         $this->eventDispatcher = $eventDispatcher;
         $this->as2Server       = $server;
         $this->requestFactory  = $requestFactory;
@@ -83,6 +100,7 @@ class AS2 implements MessageSender
         $this->messageFactory  = $messageFactory;
         $this->adapterFactory  = $adapterFactory;
         $this->client          = $client;
+        $this->logger          = $logger;
     }
     
     /**
@@ -90,7 +108,9 @@ class AS2 implements MessageSender
      */
     public function handleRequest(Request $request)
     {
+
         // Convert the symfony request to a as2s request
+
         $as2Request = $this->requestToAS2Request($request);
         // Take the request and lets AS2S handle it
         // Get the partner and verify they are authorized
@@ -114,7 +134,13 @@ class AS2 implements MessageSender
         $files = $response_object->getFiles();
         foreach ($files as $file) {
             // We have an incoming message.  Lets fire the event for it.
-            $event = (new MessageReceived())->setMessageId($as2Response->getMessageId())->setMessage(file_get_contents($file['path']))->setType(MessageReceived::TYPE_MESSAGE)->setSendingPartnerId($partner->id)->setReceivingPartnerId($as2Response->getPartnerTo()->id);
+            $event = new MessageReceived();
+            $event
+                ->setMessageId($as2Response->getMessageId())
+                ->setMessage(file_get_contents($file['path']))
+                ->setType(MessageReceived::TYPE_MESSAGE)
+                ->setSendingPartnerId($partner->id)
+                ->setReceivingPartnerId($as2Response->getPartnerTo()->id);
             
             $this->eventDispatcher->dispatch(MessageReceived::EVENT, $event);
         }
@@ -131,7 +157,9 @@ class AS2 implements MessageSender
         foreach ($request->headers as $key => $header) {
             $flattenedHeaders[$key] = reset($header);
         }
-        
+        $this->logger->info('headers', $flattenedHeaders);
+//        $this->logger->info('content', ['content' => $request->getContent()]);
+
         return $this->requestFactory->build($request->getContent(), new Header($flattenedHeaders));
     }
     
@@ -147,7 +175,7 @@ class AS2 implements MessageSender
      * @throws \TechData\AS2SecureBundle\Models\AS2Exception
      * @throws \TechData\AS2SecureBundle\Models\Exception
      */
-    public function sendMessage($toPartner, $fromPartner, $messageContent,$mimeType = "application/xml")
+    public function sendMessage($toPartner, $fromPartner, $messageContent,$mimeType = "application/xml", $filename = '')
     {
         // process request to build outbound AS2 message to VAR
         
@@ -161,7 +189,7 @@ class AS2 implements MessageSender
         $adapter = $this->adapterFactory->build($fromPartner, $toPartner);
         
         // write the EDI message that will be sent to a temp file, then use the AS2 adapter to encrypt it
-        $message->addFile($messageContent, $mimeType, "", false);
+        $message->addFile($messageContent, $mimeType, $filename, false);
         $message->encode();
         
         // send AS2 message
@@ -180,6 +208,79 @@ class AS2 implements MessageSender
             unlink($file['path']);
         }
         return $result;
+    }
+
+
+    /**
+     * @param $toPartner
+     * @param $fromPartner
+     * @param $path
+     * @return array
+     * @throws \Exception
+     * @throws \TechData\AS2SecureBundle\Models\AS2Exception
+     */
+    public function sendFileMessage($toPartner, $fromPartner, $path) {
+
+        $message = $this->buildMessage($toPartner, $fromPartner);
+        $adapter = $this->buildAdapter($toPartner, $fromPartner);
+
+        // write the EDI message that will be sent to a temp file, then use the AS2 adapter to encrypt it
+        $message->addFile($path);
+        $message->encode();
+//        $this->logger->info('load message', ['message' => serialize($message)]);
+//        $message->addHeader('Content-Type', 'application/pkcs7-signature; name=smime.p7s; mime-type=signed-data');
+//        $message->addHeader('Content-Transfer-Encoding', 'base64');
+//        $message->addHeader('Content-Disposition', 'attachment; filename="ConnectivityTest.txt"');
+//        $message->addHeader('Content-Description', 'S/MIME Cryptographic Signature');
+
+
+        // send AS2 message
+        $result = $this->client->sendRequest($message);
+        $contentFile = file_get_contents($path);
+        $this->postMessageSend($message, $contentFile, $result);
+
+        return $result;
+    }
+
+    /**
+     * @param MessageModel $message
+     * @param $messageContent
+     * @param $result
+     */
+    protected function postMessageSend(MessageModel $message, $messageContent, $result) {
+        $this->eventDispatcher->dispatch(Log::EVENT, new Log(Log::TYPE_INFO, "Log sending Message: " . $result['log']));
+        $messageSent = new MessageSent();
+        $messageSent->setCode($result['info']['http_code']);
+        $messageSent->setMessageId($message->getMessageId());
+        $messageSent->setType(MessageSent::TYPE_MESSAGE);
+        $messageSent->setMessage($messageContent);
+        $this->eventDispatcher->dispatch(MessageSent::EVENT, $messageSent);
+    }
+
+    /**
+     * initialize outbound AS2Message object
+     * @param $toPartner
+     * @param $fromPartner
+     *
+     * @return MessageModel
+     */
+    protected function buildMessage($toPartner, $fromPartner) {
+        return $this->messageFactory->build(false, [
+            'partner_from' => $fromPartner,
+            'partner_to'   => $toPartner,
+        ]);
+    }
+
+    /**
+     * initialize AS2Adapter for public key encryption between StreamOne and the receiving VAR
+     *
+     * @param $toPartner
+     * @param $fromPartner
+     *
+     * @return AdapterModel
+     */
+    protected function buildAdapter($toPartner, $fromPartner) {
+        return $this->adapterFactory->build($fromPartner, $toPartner);
     }
 }
 

@@ -51,6 +51,7 @@
         <service id="tech_data_as2_secure.factory.adapter" class="%tech_data_as2_secure.factory.adapter.class%" public="false">
             <argument type="service" id="tech_data_as2_secure.factory.partner" />
             <argument>%tech_data_as2_secure.factory.adapter.bin_location%</argument>
+            <argument type="service" id="monolog.logger.as2command" />
         </service>
         
 
@@ -86,6 +87,7 @@
             <argument type="service" id="tech_data_as2_secure.factory.message" />
             <argument type="service" id="tech_data_as2_secure.factory.adapter" />
             <argument type="service" id="tech_data_as2_secure.model.client" />
+            <argument type="service" id="monolog.logger.as2log" />
         </service>
 
         <!-- Controllers -->
