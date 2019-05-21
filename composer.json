@@ -21,7 +21,7 @@
   ],
   "require": {
     "php": ">=5.3.2",
-    "symfony/symfony": ">=2.3.0"
+    "symfony/symfony": ">=4.2"
   },
   "autoload": {
     "psr-0": {"TechData\\AS2SecureBundle": ""},
